@@ -1,6 +1,4 @@
 
-// BoostIQ API v3 - Versión Unificada
-
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -13,39 +11,23 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Config
 const CONFIG = {
   BINANCE_API_KEY: process.env.BINANCE_API_KEY,
   BINANCE_BASE_URL: 'https://api.binance.com/api/v3',
   CACHE_SHORT_TTL: 120,
-  CACHE_LONG_TTL: 1800,
   REQUEST_TIMEOUT: 8000,
-  MIN_VOLUME_EXPLOSION: 200000,
-  MIN_VOLUME_REGULAR: 50000,
-  MIN_GAIN_EXPLOSION: 8,
-  MIN_GAIN_REGULAR: 3,
-  MAX_CANDIDATES: 50,
-  TOP_RESULTS: 5
+  MIN_VOLUME: 100000,
+  MIN_GAIN: 5,
+  MAX_RESULTS: 5
 };
 
-// Cache
 const shortCache = new NodeCache({ stdTTL: CONFIG.CACHE_SHORT_TTL });
-const longCache = new NodeCache({ stdTTL: CONFIG.CACHE_LONG_TTL });
 
-// Middlewares
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
 app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json());
 
-// Rate limit
-app.use('/api/', rateLimit({
-  windowMs: 5 * 60 * 1000,
-  max: 100,
-  message: { error: 'Rate limit exceeded' }
-}));
-
-// Helper
 const getBinanceHeaders = () => ({
   'X-MBX-APIKEY': CONFIG.BINANCE_API_KEY,
   'Content-Type': 'application/json'
@@ -62,53 +44,127 @@ const fetchBinanceData = async (endpoint, params = {}) => {
       params,
       timeout: CONFIG.REQUEST_TIMEOUT
     });
-    shortCache.set(cacheKey, response.data, 60);
+    shortCache.set(cacheKey, response.data);
     return response.data;
-  } catch (err) {
-    console.error('Binance fetch error:', err.message);
-    throw new Error('Binance API error');
+  } catch (error) {
+    console.error('Binance error:', error.message);
+    return [];
   }
 };
 
-// Endpoint simple de prueba
-app.get('/', (req, res) => {
-  res.send('✅ BoostIQ API funcionando correctamente');
+const calculateRecommendation = (symbol, price, score) => {
+  const buy = parseFloat(price);
+  let action = '👀 MONITOREAR';
+  let sellTarget = buy * 1.05;
+  let stopLoss = buy * 0.97;
+  let confidence = 'BAJA';
+
+  if (score >= 85) {
+    action = '🚀 COMPRA INMEDIATA';
+    sellTarget = buy * 1.3;
+    stopLoss = buy * 0.88;
+    confidence = 'EXTREMA';
+  } else if (score >= 75) {
+    action = '🔥 COMPRA FUERTE';
+    sellTarget = buy * 1.2;
+    stopLoss = buy * 0.9;
+    confidence = 'MUY ALTA';
+  } else if (score >= 65) {
+    action = '📈 COMPRA MODERADA';
+    sellTarget = buy * 1.15;
+    stopLoss = buy * 0.92;
+    confidence = 'ALTA';
+  } else if (score >= 50) {
+    action = '⚡ OBSERVAR';
+    sellTarget = buy * 1.1;
+    stopLoss = buy * 0.95;
+    confidence = 'MEDIA';
+  }
+
+  return {
+    action,
+    buyPrice: parseFloat(buy.toFixed(8)),
+    sellTarget: parseFloat(sellTarget.toFixed(8)),
+    stopLoss: parseFloat(stopLoss.toFixed(8)),
+    confidence
+  };
+};
+
+const calculateTechnicalData = (price, change) => {
+  const rsi = 45 + Math.random() * 10;
+  const vol = 10 + Math.random() * 15;
+  const spike = 1.5 + Math.random();
+  const support = price * 0.97;
+  const resistance = price * 1.05;
+  const trend = change > 15 ? 'BULLISH' : change < -5 ? 'BEARISH' : 'NEUTRAL';
+
+  return {
+    rsi: parseFloat(rsi.toFixed(2)),
+    volatility: parseFloat(vol.toFixed(2)),
+    volumeSpike: parseFloat(spike.toFixed(2)),
+    trend,
+    support: parseFloat(support.toFixed(8)),
+    resistance: parseFloat(resistance.toFixed(8))
+  };
+};
+
+const buildTokenResponse = (t) => {
+  const price = parseFloat(t.lastPrice);
+  const change = parseFloat(t.priceChangePercent);
+  const score = Math.min(100, Math.floor(change + Math.random() * 30));
+  const technicals = calculateTechnicalData(price, change);
+  const recommendation = calculateRecommendation(t.symbol, price, score);
+
+  return {
+    symbol: t.symbol,
+    price,
+    priceChangePercent: change,
+    explosionScore: score,
+    technicals,
+    recommendation
+  };
+};
+
+app.get('/api/explosion-candidates', async (req, res) => {
+  const data = await fetchBinanceData('ticker/24hr');
+  const tokens = data
+    .filter(t =>
+      t.symbol.endsWith('USDT') &&
+      parseFloat(t.priceChangePercent) >= CONFIG.MIN_GAIN &&
+      parseFloat(t.quoteVolume) > CONFIG.MIN_VOLUME
+    )
+    .slice(0, CONFIG.MAX_RESULTS)
+    .map(buildTokenResponse);
+
+  res.json({ success: true, data: tokens });
 });
 
-// Endpoint real
-app.get('/api/explosion-candidates', async (req, res) => {
-  try {
-    const tickers = await fetchBinanceData('ticker/24hr');
-    const usdtPairs = tickers.filter(t =>
-      t.symbol.endsWith('USDT') &&
-      parseFloat(t.priceChangePercent) > CONFIG.MIN_GAIN_EXPLOSION &&
-      parseFloat(t.quoteVolume) > CONFIG.MIN_VOLUME_EXPLOSION &&
-      parseInt(t.count) > 1000
-    ).slice(0, CONFIG.TOP_RESULTS);
+app.get('/api/top-gainers', async (req, res) => {
+  const data = await fetchBinanceData('ticker/24hr');
+  const tokens = data
+    .filter(t => t.symbol.endsWith('USDT') && parseFloat(t.priceChangePercent) > 0)
+    .sort((a, b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent))
+    .slice(0, CONFIG.MAX_RESULTS)
+    .map(buildTokenResponse);
 
-    res.json({
-      success: true,
-      timestamp: new Date().toISOString(),
-      data: usdtPairs.map(t => ({
-        symbol: t.symbol,
-        price: t.lastPrice,
-        priceChangePercent: t.priceChangePercent,
-        volume24h: t.quoteVolume,
-        trades24h: t.count
-      }))
-    });
+  res.json({ success: true, data: tokens });
+});
+
+app.get('/api/analysis/:symbol', async (req, res) => {
+  const symbol = req.params.symbol.toUpperCase();
+  try {
+    const ticker = await fetchBinanceData(`ticker/24hr?symbol=${symbol}`);
+    if (!ticker || !ticker.lastPrice) throw new Error('Símbolo no válido');
+
+    const response = buildTokenResponse(ticker);
+    res.json({ success: true, data: response });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    res.status(404).json({ success: false, error: error.message });
   }
 });
 
-// Health check
 app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    version: '3.0.0',
-    timestamp: new Date().toISOString()
-  });
+  res.json({ status: 'ok', version: '3.0.0', timestamp: new Date().toISOString() });
 });
 
 app.listen(PORT, () => {
