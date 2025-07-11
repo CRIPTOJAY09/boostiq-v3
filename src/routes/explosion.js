@@ -1,12 +1,6 @@
-// exconst axios = require('axios');
+const axios = require('axios');
 
-const POPULAR_TOKENS = new Set([
-  'BTCUSDT','ETHUSDT','BNBUSDT','ADAUSDT','XRPUSDT','SOLUSDT','DOGEUSDT','MATICUSDT',
-  'TRXUSDT','DOTUSDT','LTCUSDT','AVAXUSDT','SHIBUSDT','LINKUSDT','ATOMUSDT','BCHUSDT',
-  'XLMUSDT','ETCUSDT','FILUSDT','APTUSDT'
-]);
-
-module.exports = (app, CONFIG, shortCache, longCache) => {
+module.exports = (app, CONFIG, shortCache, longCache, POPULAR_TOKENS) => {
   app.get('/api/explosion-candidates', async (req, res) => {
     try {
       const cacheKey = 'explosionCandidates';
@@ -28,12 +22,10 @@ module.exports = (app, CONFIG, shortCache, longCache) => {
           const price = parseFloat(t.lastPrice);
           const percent = parseFloat(t.priceChangePercent);
           const explosionScore = Math.round((percent / 2) + (Math.random() * 40) + 20);
-
           const rsi = 45 + Math.random() * 10;
           const volumeSpike = 2.5 + Math.random() * 1.5;
           const trend = 'BULLISH';
           const volatility = 10 + Math.random() * 20;
-
           const support = parseFloat((price * 0.97).toFixed(8));
           const resistance = parseFloat((price * 1.05).toFixed(8));
 
@@ -72,9 +64,7 @@ module.exports = (app, CONFIG, shortCache, longCache) => {
       shortCache.set(cacheKey, candidates);
       res.json(candidates);
     } catch (err) {
-      console.error('/explosion-candidates error', err);
       res.status(500).json({ error: 'Internal server error' });
     }
   });
 };
-plosion endpoint placeholder
