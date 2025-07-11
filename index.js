@@ -23,6 +23,8 @@ const CONFIG = {
 
 const shortCache = new NodeCache({ stdTTL: CONFIG.CACHE_SHORT_TTL });
 
+const POPULAR_TOKENS = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','ADAUSDT','SOLUSDT','DOGEUSDT','MATICUSDT','DOTUSDT','TRXUSDT','LTCUSDT','LINKUSDT','SHIBUSDT','AVAXUSDT','ATOMUSDT','NEARUSDT','XLMUSDT','ETCUSDT','BCHUSDT','HBARUSDT','FILUSDT','SUIUSDT','APTUSDT','INJUSDT','IMXUSDT','ARBUSDT','RNDRUSDT','TONUSDT','ICPUSDT','CROUSDT']);
+
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
 app.use(cors({ origin: '*' }));
@@ -130,6 +132,7 @@ app.get('/api/explosion-candidates', async (req, res) => {
   const tokens = data
     .filter(t =>
       t.symbol.endsWith('USDT') &&
+      !POPULAR_TOKENS.has(t.symbol) &&
       parseFloat(t.priceChangePercent) >= CONFIG.MIN_GAIN &&
       parseFloat(t.quoteVolume) > CONFIG.MIN_VOLUME
     )
@@ -142,7 +145,7 @@ app.get('/api/explosion-candidates', async (req, res) => {
 app.get('/api/top-gainers', async (req, res) => {
   const data = await fetchBinanceData('ticker/24hr');
   const tokens = data
-    .filter(t => t.symbol.endsWith('USDT') && parseFloat(t.priceChangePercent) > 0)
+    .filter(t => t.symbol.endsWith('USDT') && !POPULAR_TOKENS.has(t.symbol) && parseFloat(t.priceChangePercent) > 0)
     .sort((a, b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent))
     .slice(0, CONFIG.MAX_RESULTS)
     .map(buildTokenResponse);
@@ -154,7 +157,7 @@ app.get('/api/new-listings', async (req, res) => {
   const data = await fetchBinanceData('exchangeInfo');
   const all24h = await fetchBinanceData('ticker/24hr');
   const usdtPairs = data.symbols
-    .filter(s => s.symbol.endsWith('USDT'))
+    .filter(s => s.symbol.endsWith('USDT') && !POPULAR_TOKENS.has(s.symbol))
     .sort((a, b) => new Date(b.onboardDate || 0) - new Date(a.onboardDate || 0))
     .slice(0, CONFIG.MAX_RESULTS);
 
