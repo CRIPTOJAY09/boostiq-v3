@@ -40,8 +40,8 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// 🚀 Importar endpoints
-require('./routes')(app, CONFIG, shortCache, longCache);
+// 🚀 Importar endpoints correctamente desde src/routes
+require('./src/routes')(app, CONFIG, shortCache, longCache);
 
 // 🚀 Servidor activo
 app.listen(PORT, () => {
