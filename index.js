@@ -150,6 +150,23 @@ app.get('/api/top-gainers', async (req, res) => {
   res.json({ success: true, data: tokens });
 });
 
+app.get('/api/new-listings', async (req, res) => {
+  const data = await fetchBinanceData('exchangeInfo');
+  const all24h = await fetchBinanceData('ticker/24hr');
+  const usdtPairs = data.symbols
+    .filter(s => s.symbol.endsWith('USDT'))
+    .sort((a, b) => new Date(b.onboardDate || 0) - new Date(a.onboardDate || 0))
+    .slice(0, CONFIG.MAX_RESULTS);
+
+  const result = usdtPairs.map(pair => {
+    const ticker = all24h.find(t => t.symbol === pair.symbol);
+    if (!ticker) return null;
+    return buildTokenResponse(ticker);
+  }).filter(Boolean);
+
+  res.json({ success: true, data: result });
+});
+
 app.get('/api/analysis/:symbol', async (req, res) => {
   const symbol = req.params.symbol.toUpperCase();
   try {
@@ -164,7 +181,7 @@ app.get('/api/analysis/:symbol', async (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: '3.0.0', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', version: '3.1.0', timestamp: new Date().toISOString() });
 });
 
 app.listen(PORT, () => {
