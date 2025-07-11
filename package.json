@@ -2,9 +2,9 @@
   "name": "boostiq-api",
   "version": "3.0.0",
   "description": "BoostIQ Crypto Signal Detection API",
-  "main": "index.js",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node src/index.js"
   },
   "dependencies": {
     "axios": "^1.6.0",
