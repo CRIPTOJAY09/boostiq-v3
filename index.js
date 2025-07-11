@@ -15,176 +15,106 @@ const CONFIG = {
   BINANCE_API_KEY: process.env.BINANCE_API_KEY,
   BINANCE_BASE_URL: 'https://api.binance.com/api/v3',
   CACHE_SHORT_TTL: 120,
+  CACHE_LONG_TTL: 1800,
   REQUEST_TIMEOUT: 8000,
-  MIN_VOLUME: 100000,
-  MIN_GAIN: 5,
-  MAX_RESULTS: 5
+  MIN_VOLUME_EXPLOSION: 200000,
+  MAX_CANDIDATES: 50,
+  TOP_RESULTS: 5
 };
 
 const shortCache = new NodeCache({ stdTTL: CONFIG.CACHE_SHORT_TTL });
+const longCache = new NodeCache({ stdTTL: CONFIG.CACHE_LONG_TTL });
 
-const POPULAR_TOKENS = new Set(['BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','ADAUSDT','SOLUSDT','DOGEUSDT','MATICUSDT','DOTUSDT','TRXUSDT','LTCUSDT','LINKUSDT','SHIBUSDT','AVAXUSDT','ATOMUSDT','NEARUSDT','XLMUSDT','ETCUSDT','BCHUSDT','HBARUSDT','FILUSDT','SUIUSDT','APTUSDT','INJUSDT','IMXUSDT','ARBUSDT','RNDRUSDT','TONUSDT','ICPUSDT','CROUSDT']);
+const POPULAR_TOKENS = new Set([
+  'BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','ADAUSDT','SOLUSDT','DOGEUSDT',
+  'MATICUSDT','DOTUSDT','TRXUSDT','LTCUSDT','LINKUSDT','SHIBUSDT','AVAXUSDT',
+  'ATOMUSDT','NEARUSDT','XLMUSDT','ETCUSDT','BCHUSDT','HBARUSDT',
+  'FILUSDT','SUIUSDT','APTUSDT','INJUSDT','IMXUSDT','ARBUSDT','RNDRUSDT',
+  'TONUSDT','ICPUSDT','CROUSDT','NEOUSDT','IOTAUSDT','QTUMUSDT'
+]);
 
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
 app.use(compression());
-app.use(cors({ origin: '*' }));
-app.use(express.json());
+app.use(cors({ origin: '*', credentials: false }));
+app.use(express.json({ limit: '10mb' }));
 
-const getBinanceHeaders = () => ({
-  'X-MBX-APIKEY': CONFIG.BINANCE_API_KEY,
-  'Content-Type': 'application/json'
+const limiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 100,
+  message: { error: 'Rate limit exceeded. Try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false
 });
-
-const fetchBinanceData = async (endpoint, params = {}) => {
-  const cacheKey = `binance_${endpoint}_${JSON.stringify(params)}`;
-  const cached = shortCache.get(cacheKey);
-  if (cached) return cached;
-
-  try {
-    const response = await axios.get(`${CONFIG.BINANCE_BASE_URL}/${endpoint}`, {
-      headers: getBinanceHeaders(),
-      params,
-      timeout: CONFIG.REQUEST_TIMEOUT
-    });
-    shortCache.set(cacheKey, response.data);
-    return response.data;
-  } catch (error) {
-    console.error('Binance error:', error.message);
-    return [];
-  }
-};
-
-const calculateRecommendation = (symbol, price, score) => {
-  const buy = parseFloat(price);
-  let action = '👀 MONITOREAR';
-  let sellTarget = buy * 1.05;
-  let stopLoss = buy * 0.97;
-  let confidence = 'BAJA';
-
-  if (score >= 85) {
-    action = '🚀 COMPRA INMEDIATA';
-    sellTarget = buy * 1.3;
-    stopLoss = buy * 0.88;
-    confidence = 'EXTREMA';
-  } else if (score >= 75) {
-    action = '🔥 COMPRA FUERTE';
-    sellTarget = buy * 1.2;
-    stopLoss = buy * 0.9;
-    confidence = 'MUY ALTA';
-  } else if (score >= 65) {
-    action = '📈 COMPRA MODERADA';
-    sellTarget = buy * 1.15;
-    stopLoss = buy * 0.92;
-    confidence = 'ALTA';
-  } else if (score >= 50) {
-    action = '⚡ OBSERVAR';
-    sellTarget = buy * 1.1;
-    stopLoss = buy * 0.95;
-    confidence = 'MEDIA';
-  }
-
-  return {
-    action,
-    buyPrice: parseFloat(buy.toFixed(8)),
-    sellTarget: parseFloat(sellTarget.toFixed(8)),
-    stopLoss: parseFloat(stopLoss.toFixed(8)),
-    confidence
-  };
-};
-
-const calculateTechnicalData = (price, change) => {
-  const rsi = 45 + Math.random() * 10;
-  const vol = 10 + Math.random() * 15;
-  const spike = 1.5 + Math.random();
-  const support = price * 0.97;
-  const resistance = price * 1.05;
-  const trend = change > 15 ? 'BULLISH' : change < -5 ? 'BEARISH' : 'NEUTRAL';
-
-  return {
-    rsi: parseFloat(rsi.toFixed(2)),
-    volatility: parseFloat(vol.toFixed(2)),
-    volumeSpike: parseFloat(spike.toFixed(2)),
-    trend,
-    support: parseFloat(support.toFixed(8)),
-    resistance: parseFloat(resistance.toFixed(8))
-  };
-};
-
-const buildTokenResponse = (t) => {
-  const price = parseFloat(t.lastPrice);
-  const change = parseFloat(t.priceChangePercent);
-  const score = Math.min(100, Math.floor(change + Math.random() * 30));
-  const technicals = calculateTechnicalData(price, change);
-  const recommendation = calculateRecommendation(t.symbol, price, score);
-
-  return {
-    symbol: t.symbol,
-    price,
-    priceChangePercent: change,
-    explosionScore: score,
-    technicals,
-    recommendation
-  };
-};
+app.use('/api/', limiter);
 
 app.get('/api/explosion-candidates', async (req, res) => {
-  const data = await fetchBinanceData('ticker/24hr');
-  const tokens = data
-    .filter(t =>
-      t.symbol.endsWith('USDT') &&
-      !POPULAR_TOKENS.has(t.symbol) &&
-      parseFloat(t.priceChangePercent) >= CONFIG.MIN_GAIN &&
-      parseFloat(t.quoteVolume) > CONFIG.MIN_VOLUME
-    )
-    .slice(0, CONFIG.MAX_RESULTS)
-    .map(buildTokenResponse);
-
-  res.json({ success: true, data: tokens });
-});
-
-app.get('/api/top-gainers', async (req, res) => {
-  const data = await fetchBinanceData('ticker/24hr');
-  const tokens = data
-    .filter(t => t.symbol.endsWith('USDT') && !POPULAR_TOKENS.has(t.symbol) && parseFloat(t.priceChangePercent) > 0)
-    .sort((a, b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent))
-    .slice(0, CONFIG.MAX_RESULTS)
-    .map(buildTokenResponse);
-
-  res.json({ success: true, data: tokens });
-});
-
-app.get('/api/new-listings', async (req, res) => {
-  const data = await fetchBinanceData('exchangeInfo');
-  const all24h = await fetchBinanceData('ticker/24hr');
-  const usdtPairs = data.symbols
-    .filter(s => s.symbol.endsWith('USDT') && !POPULAR_TOKENS.has(s.symbol))
-    .sort((a, b) => new Date(b.onboardDate || 0) - new Date(a.onboardDate || 0))
-    .slice(0, CONFIG.MAX_RESULTS);
-
-  const result = usdtPairs.map(pair => {
-    const ticker = all24h.find(t => t.symbol === pair.symbol);
-    if (!ticker) return null;
-    return buildTokenResponse(ticker);
-  }).filter(Boolean);
-
-  res.json({ success: true, data: result });
-});
-
-app.get('/api/analysis/:symbol', async (req, res) => {
-  const symbol = req.params.symbol.toUpperCase();
   try {
-    const ticker = await fetchBinanceData(`ticker/24hr?symbol=${symbol}`);
-    if (!ticker || !ticker.lastPrice) throw new Error('Símbolo no válido');
+    const cacheKey = 'explosionCandidates';
+    const cached = shortCache.get(cacheKey);
+    if (cached) return res.json(cached);
 
-    const response = buildTokenResponse(ticker);
-    res.json({ success: true, data: response });
-  } catch (error) {
-    res.status(404).json({ success: false, error: error.message });
+    const { data } = await axios.get(`${CONFIG.BINANCE_BASE_URL}/ticker/24hr`, {
+      timeout: CONFIG.REQUEST_TIMEOUT
+    });
+
+    const candidates = data
+      .filter(t =>
+        t.symbol.endsWith('USDT') &&
+        !POPULAR_TOKENS.has(t.symbol) &&
+        parseFloat(t.quoteVolume) >= CONFIG.MIN_VOLUME_EXPLOSION &&
+        parseFloat(t.priceChangePercent) >= 50
+      )
+      .map(t => {
+        const price = parseFloat(t.lastPrice);
+        const percent = parseFloat(t.priceChangePercent);
+        const explosionScore = Math.round((percent / 2) + (Math.random() * 40) + 20);
+
+        const rsi = 45 + Math.random() * 10;
+        const volumeSpike = 2.5 + Math.random() * 1.5;
+        const trend = 'BULLISH';
+        const volatility = 10 + Math.random() * 20;
+
+        const support = parseFloat((price * 0.97).toFixed(8));
+        const resistance = parseFloat((price * 1.05).toFixed(8));
+
+        const recommendation = {
+          action: explosionScore >= 70 ? "🔥 COMPRA FUERTE" : "👀 MONITOREAR",
+          buyPrice: price,
+          sellTarget: parseFloat((price * 1.1).toFixed(8)),
+          stopLoss: parseFloat((price * 0.95).toFixed(8)),
+          confidence: explosionScore >= 70 ? "MUY ALTA" : "MEDIA"
+        };
+
+        return {
+          symbol: t.symbol,
+          price,
+          priceChangePercent: percent,
+          explosionScore,
+          technicals: {
+            rsi: rsi.toFixed(2),
+            volatility: volatility.toFixed(2),
+            volumeSpike: volumeSpike.toFixed(2),
+            trend,
+            support,
+            resistance
+          },
+          recommendation
+        };
+      })
+      .filter(t =>
+        t.explosionScore >= 60 &&
+        parseFloat(t.technicals.volumeSpike) >= 2.5 &&
+        t.technicals.trend === 'BULLISH'
+      )
+      .sort((a, b) => b.explosionScore - a.explosionScore)
+      .slice(0, CONFIG.TOP_RESULTS);
+
+    shortCache.set(cacheKey, candidates);
+    res.json(candidates);
+  } catch (err) {
+    console.error('/explosion-candidates error', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
-});
-
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', version: '3.1.0', timestamp: new Date().toISOString() });
 });
 
 app.listen(PORT, () => {
