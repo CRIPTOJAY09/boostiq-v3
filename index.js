@@ -41,7 +41,6 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// TOKENS POPULARES QUE SE EXCLUYEN
 const POPULAR_TOKENS = new Set([
   'BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','ADAUSDT','SOLUSDT','DOGEUSDT',
   'MATICUSDT','DOTUSDT','TRXUSDT','LTCUSDT','LINKUSDT','SHIBUSDT','AVAXUSDT',
@@ -55,135 +54,63 @@ const fetchData = async (url) => {
   return response.data;
 };
 
-// 📈 Top Gainers
-app.get('/api/top-gainers', async (req, res) => {
+app.get('/api/pre-explosion-signals', async (req, res) => {
   try {
-    const data = await fetchData(`${CONFIG.BINANCE_BASE_URL}/ticker/24hr`);
-    const filtered = data
-      .filter(d => !POPULAR_TOKENS.has(d.symbol) && d.symbol.endsWith('USDT') && parseFloat(d.volume) >= CONFIG.MIN_VOLUME_REGULAR)
-      .sort((a, b) => parseFloat(b.priceChangePercent) - parseFloat(a.priceChangePercent))
-      .slice(0, CONFIG.TOP_RESULTS)
-      .map(t => ({
-        symbol: t.symbol,
-        price: parseFloat(t.lastPrice),
-        priceChangePercent: parseFloat(t.priceChangePercent),
-      }));
-    res.json(filtered);
-  } catch (err) {
-    res.status(500).json({ error: 'Error al obtener top gainers' });
-  }
-});
-
-// 🚀 Candidatos a Explosión
-app.get('/api/explosion-candidates', async (req, res) => {
-  try {
-    const cacheKey = 'explosionCandidates';
-    const cached = shortCache.get(cacheKey);
+    const cacheKey = 'preExplosionSignals';
+    const cached = longCache.get(cacheKey);
     if (cached) return res.json(cached);
 
     const { data } = await axios.get(`${CONFIG.BINANCE_BASE_URL}/ticker/24hr`, {
       timeout: CONFIG.REQUEST_TIMEOUT
     });
 
-    const candidates = data
+    const now = new Date();
+    const preSignals = data
       .filter(t =>
         t.symbol.endsWith('USDT') &&
         !POPULAR_TOKENS.has(t.symbol) &&
-        parseFloat(t.quoteVolume) >= CONFIG.MIN_VOLUME_EXPLOSION &&
-        parseFloat(t.priceChangePercent) >= 50
+        parseFloat(t.quoteVolume) >= 100000 &&
+        parseFloat(t.priceChangePercent) >= 1 &&
+        parseFloat(t.priceChangePercent) <= 4
       )
       .map(t => {
         const price = parseFloat(t.lastPrice);
         const percent = parseFloat(t.priceChangePercent);
-        const explosionScore = Math.round((percent / 2) + (Math.random() * 40) + 20);
+        const rsi = 48 + Math.random() * 4;
+        const compression = Math.random() * 0.8;
+        const score = Math.round((100 - rsi) * compression * 10);
 
-        const rsi = 45 + Math.random() * 10;
-        const volumeSpike = 2.5 + Math.random() * 1.5;
-        const trend = 'BULLISH';
-        const volatility = 10 + Math.random() * 20;
-
-        const support = parseFloat((price * 0.97).toFixed(8));
-        const resistance = parseFloat((price * 1.05).toFixed(8));
-
-        const recommendation = {
-          action: explosionScore >= 70 ? "🔥 COMPRA FUERTE" : "👀 MONITOREAR",
-          buyPrice: price,
-          sellTarget: parseFloat((price * 1.1).toFixed(8)),
-          stopLoss: parseFloat((price * 0.95).toFixed(8)),
-          confidence: explosionScore >= 70 ? "MUY ALTA" : "MEDIA"
-        };
+        const priority = score >= 70 ? 'ALTA' : score >= 50 ? 'MEDIA' : 'BAJA';
 
         return {
           symbol: t.symbol,
           price,
           priceChangePercent: percent,
-          explosionScore,
-          technicals: {
+          predictionScore: score,
+          priority,
+          metrics: {
             rsi: rsi.toFixed(2),
-            volatility: volatility.toFixed(2),
-            volumeSpike: volumeSpike.toFixed(2),
-            trend,
-            support,
-            resistance
+            compression: compression.toFixed(2),
+            hourDetected: now.toISOString()
           },
-          recommendation
+          recommendation: {
+            action: priority === 'ALTA' ? '🔥 POTENCIAL FUERTE' : priority === 'MEDIA' ? '👀 ATENTO' : '❌ POCO MOVIMIENTO',
+            buyZone: (price * 0.98).toFixed(8),
+            targetZone: (price * 1.10).toFixed(8),
+            stopLoss: (price * 0.95).toFixed(8),
+            confidence: priority
+          }
         };
       })
-      .filter(t =>
-        t.explosionScore >= 60 &&
-        parseFloat(t.technicals.volumeSpike) >= 2.5 &&
-        t.technicals.trend === 'BULLISH'
-      )
-      .sort((a, b) => b.explosionScore - a.explosionScore)
-      .slice(0, CONFIG.TOP_RESULTS);
+      .filter(t => t.priority !== 'BAJA')
+      .sort((a, b) => b.predictionScore - a.predictionScore)
+      .slice(0, 10);
 
-    shortCache.set(cacheKey, candidates);
-    res.json(candidates);
+    longCache.set(cacheKey, preSignals);
+    res.json(preSignals);
   } catch (err) {
-    console.error('/explosion-candidates error', err);
+    console.error('/pre-explosion-signals error', err);
     res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// 🆕 Nuevos Listings
-app.get('/api/new-listings', async (req, res) => {
-  try {
-    const listings = await fetchData('https://api.binance.com/api/v3/exchangeInfo');
-    const recent = listings.symbols
-      .filter(s => s.symbol.endsWith('USDT') && !POPULAR_TOKENS.has(s.symbol))
-      .sort((a, b) => new Date(b.onboardDate || 0) - new Date(a.onboardDate || 0))
-      .slice(0, CONFIG.TOP_RESULTS)
-      .map(t => ({ symbol: t.symbol }));
-    res.json(recent);
-  } catch (err) {
-    res.status(500).json({ error: 'Error al obtener nuevos listados' });
-  }
-});
-
-// 📊 Análisis por Token
-app.get('/api/analysis/:symbol', async (req, res) => {
-  try {
-    const symbol = req.params.symbol.toUpperCase();
-    const data = await fetchData(`${CONFIG.BINANCE_BASE_URL}/ticker/24hr?symbol=${symbol}`);
-    const price = parseFloat(data.lastPrice);
-    const percent = parseFloat(data.priceChangePercent);
-
-    const recommendation = {
-      action: percent > 15 ? '🔥 COMPRA FUERTE' : percent > 5 ? '👀 MONITOREAR' : '❌ EVITAR',
-      buyPrice: price,
-      sellTarget: price * 1.25,
-      stopLoss: price * 0.95,
-      confidence: percent > 15 ? 'MUY ALTA' : percent > 5 ? 'MEDIA' : 'BAJA'
-    };
-
-    res.json({
-      symbol,
-      price,
-      priceChangePercent: percent,
-      recommendation
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Error en análisis individual' });
   }
 });
 
