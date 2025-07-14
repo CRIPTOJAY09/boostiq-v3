@@ -30,20 +30,20 @@ const CONFIG = {
   CACHE_SHORT_TTL: 120, // 2 minutos
   CACHE_LONG_TTL: 1800, // 30 minutos
   REQUEST_TIMEOUT: 8000,
-  MIN_VOLUME_EXPLOSION: 50000, // Volumen mínimo para explosión
-  MIN_VOLUME_REGULAR: 30000, // Volumen mínimo regular
-  MIN_GAIN_5M: 4, // Cambio mínimo en 5 minutos
-  MIN_GAIN_1H: 6, // Cambio mínimo en 1 hora
-  MIN_VOLUME_RATIO: 2.0, // Volumen actual vs. histórico
+  MIN_VOLUME_EXPLOSION: 30000, // Reducido para más resultados
+  MIN_VOLUME_REGULAR: 20000, // Reducido para más resultados
+  MIN_GAIN_5M: 3, // Relajado de 4 a 3
+  MIN_GAIN_1H: 4, // Relajado de 6 a 4
+  MIN_VOLUME_RATIO: 1.5, // Relajado de 2.0 a 1.5
   RSI_MIN: 40,
   RSI_MAX: 70,
-  MIN_EXPLOSION_SCORE: 60,
-  MIN_ALERT_SCORE: 60,
+  MIN_EXPLOSION_SCORE: 50, // Relajado de 60 a 50
+  MIN_ALERT_SCORE: 50, // Relajado de 60 a 50
   MAX_CANDIDATES: 50,
-  TOP_RESULTS: 10, // 10 tokens para el frontend
+  TOP_RESULTS: 10, // Fijo a 10
   RSI_PERIOD: 14,
   VOLUME_LOOKBACK_DAYS: 7,
-  COMPRESSION_THRESHOLD: 0.5 // Desviación estándar baja para compresión
+  COMPRESSION_THRESHOLD: 0.5
 };
 
 const shortCache = new NodeCache({ stdTTL: CONFIG.CACHE_SHORT_TTL });
@@ -71,21 +71,28 @@ const POPULAR_TOKENS = new Set([
   'TONUSDT', 'ICPUSDT', 'CROUSDT', 'NEOUSDT', 'IOTAUSDT', 'QTUMUSDT'
 ]);
 
-async function fetchData(url) {
+async function fetchData(url, retries = 2) {
   try {
     const response = await axios.get(url, { timeout: CONFIG.REQUEST_TIMEOUT });
     return response.data;
   } catch (err) {
-    logger.error(`Error fetching data from ${url}: ${err.message}`);
+    if (retries > 0) {
+      logger.warn(`Retry ${retries} for ${url}: ${err.message}`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return fetchData(url, retries - 1);
+    }
+    logger.error(`Failed fetch from ${url} after retries: ${err.message}`);
     throw err;
   }
 }
 
-// Calcula cambio porcentual para un timeframe
 async function calculateChange(symbol, timeframe) {
   try {
     const ohlcv = await fetchData(`${CONFIG.BINANCE_BASE_URL}/klines?symbol=${symbol}&interval=${timeframe}&limit=2`);
-    if (ohlcv.length < 2) return 0;
+    if (ohlcv.length < 2) {
+      logger.warn(`Insufficient data for ${symbol} (${timeframe})`);
+      return 0;
+    }
     const [prevClose, currClose] = [parseFloat(ohlcv[0][4]), parseFloat(ohlcv[1][4])];
     return ((currClose - prevClose) / prevClose * 100).toFixed(2);
   } catch (err) {
@@ -94,12 +101,14 @@ async function calculateChange(symbol, timeframe) {
   }
 }
 
-// Calcula RSI a partir de velas
 async function calculateRSI(symbol) {
   try {
     const ohlcv = await fetchData(`${CONFIG.BINANCE_BASE_URL}/klines?symbol=${symbol}&interval=5m&limit=${CONFIG.RSI_PERIOD + 1}`);
     const closes = ohlcv.map(candle => parseFloat(candle[4]));
-    if (closes.length < CONFIG.RSI_PERIOD + 1) return 50;
+    if (closes.length < CONFIG.RSI_PERIOD + 1) {
+      logger.warn(`Insufficient data for RSI ${symbol}`);
+      return 50;
+    }
 
     const changes = closes.slice(1).map((close, i) => close - closes[i]);
     const gains = changes.map(c => c > 0 ? c : 0);
@@ -117,7 +126,6 @@ async function calculateRSI(symbol) {
   }
 }
 
-// Calcula volumen relativo
 async function calculateVolumeRatio(symbol, currentVolume) {
   try {
     const since = Date.now() - CONFIG.VOLUME_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
@@ -130,7 +138,6 @@ async function calculateVolumeRatio(symbol, currentVolume) {
   }
 }
 
-// Detecta compresión (baja volatilidad)
 async function calculateCompression(symbol) {
   try {
     const ohlcv = await fetchData(`${CONFIG.BINANCE_BASE_URL}/klines?symbol=${symbol}&interval=5m&limit=20`);
@@ -144,7 +151,6 @@ async function calculateCompression(symbol) {
   }
 }
 
-// Calcula volatilidad
 async function calculateVolatility(symbol) {
   try {
     const ohlcv = await fetchData(`${CONFIG.BINANCE_BASE_URL}/klines?symbol=${symbol}&interval=5m&limit=20`);
@@ -157,7 +163,6 @@ async function calculateVolatility(symbol) {
   }
 }
 
-// Obtiene nuevos listados
 async function getNewListings() {
   try {
     const cacheKey = 'newListings';
@@ -211,12 +216,15 @@ app.get('/api/explosion-candidates', async (req, res) => {
     ]);
 
     const candidates = [];
-    for (const t of tickerData) {
+    for (const t of tickerData.slice(0, CONFIG.MAX_CANDIDATES)) { // Limitar candidatos iniciales
       if (!t.symbol.endsWith('USDT') || POPULAR_TOKENS.has(t.symbol)) continue;
       
       const price = parseFloat(t.lastPrice);
       const volume = parseFloat(t.baseVolume);
-      if (volume < CONFIG.MIN_VOLUME_EXPLOSION) continue;
+      if (volume < CONFIG.MIN_VOLUME_EXPLOSION) {
+        logger.debug(`${t.symbol} excluded: volume ${volume} < ${CONFIG.MIN_VOLUME_EXPLOSION}`);
+        continue;
+      }
 
       const [change5m, change1h, rsi, volumeRatio, compression, volatility] = await Promise.all([
         calculateChange(t.symbol, '5m'),
@@ -229,8 +237,8 @@ app.get('/api/explosion-candidates', async (req, res) => {
 
       const isNew = newListings.includes(t.symbol);
       const explosionScore = Math.round(
-        (parseFloat(change5m) / 25 * 100 * 0.35) + // Cap at 25%
-        (parseFloat(change1h) / 35 * 100 * 0.15) + // Cap at 35%
+        (Math.min(parseFloat(change5m), 25) / 25 * 100 * 0.35) +
+        (Math.min(parseFloat(change1h), 35) / 35 * 100 * 0.15) +
         (Math.min(parseFloat(volumeRatio), 10) / 10 * 100 * 0.3) +
         ((rsi >= CONFIG.RSI_MIN && rsi <= CONFIG.RSI_MAX ? 100 : 50) * 0.1) +
         (isNew ? 20 : 0) +
@@ -280,8 +288,13 @@ app.get('/api/explosion-candidates', async (req, res) => {
       .sort((a, b) => b.explosionScore - a.explosionScore)
       .slice(0, CONFIG.TOP_RESULTS);
 
+    if (topCandidates.length > CONFIG.TOP_RESULTS) {
+      logger.warn(`Truncated ${topCandidates.length} to ${CONFIG.TOP_RESULTS} tokens`);
+      topCandidates.length = CONFIG.TOP_RESULTS;
+    }
+
     shortCache.set(cacheKey, topCandidates);
-    logger.info(`Found ${topCandidates.length} explosion candidates`);
+    logger.info(`Found ${topCandidates.length} explosion candidates: ${topCandidates.map(t => t.symbol).join(', ')}`);
     res.json(topCandidates);
   } catch (err) {
     logger.error(`Error in /explosion-candidates: ${err.message}`);
@@ -302,12 +315,15 @@ app.get('/api/pre-explosion-signals', async (req, res) => {
     ]);
 
     const alerts = [];
-    for (const t of tickerData) {
+    for (const t of tickerData.slice(0, CONFIG.MAX_CANDIDATES)) { // Limitar candidatos iniciales
       if (!t.symbol.endsWith('USDT') || POPULAR_TOKENS.has(t.symbol)) continue;
       
       const price = parseFloat(t.lastPrice);
       const volume = parseFloat(t.baseVolume);
-      if (volume < CONFIG.MIN_VOLUME_REGULAR) continue;
+      if (volume < CONFIG.MIN_VOLUME_REGULAR) {
+        logger.debug(`${t.symbol} excluded: volume ${volume} < ${CONFIG.MIN_VOLUME_REGULAR}`);
+        continue;
+      }
 
       const [change5m, change1h, rsi, volumeRatio, compression, volatility] = await Promise.all([
         calculateChange(t.symbol, '5m'),
@@ -320,8 +336,8 @@ app.get('/api/pre-explosion-signals', async (req, res) => {
 
       const isNew = newListings.includes(t.symbol);
       const alertScore = Math.round(
-        (parseFloat(change5m) / 25 * 100 * 0.35) +
-        (parseFloat(change1h) / 35 * 100 * 0.15) +
+        (Math.min(parseFloat(change5m), 25) / 25 * 100 * 0.35) +
+        (Math.min(parseFloat(change1h), 35) / 35 * 100 * 0.15) +
         (Math.min(parseFloat(volumeRatio), 10) / 10 * 100 * 0.3) +
         ((rsi >= CONFIG.RSI_MIN && rsi <= CONFIG.RSI_MAX ? 100 : 50) * 0.1) +
         (isNew ? 20 : 0) +
@@ -360,8 +376,13 @@ app.get('/api/pre-explosion-signals', async (req, res) => {
       .sort((a, b) => b.alertScore - a.alertScore)
       .slice(0, CONFIG.TOP_RESULTS);
 
+    if (topAlerts.length > CONFIG.TOP_RESULTS) {
+      logger.warn(`Truncated ${topAlerts.length} to ${CONFIG.TOP_RESULTS} tokens`);
+      topAlerts.length = CONFIG.TOP_RESULTS;
+    }
+
     shortCache.set(cacheKey, topAlerts);
-    logger.info(`Found ${topAlerts.length} pre-explosion signals`);
+    logger.info(`Found ${topAlerts.length} pre-explosion signals: ${topAlerts.map(t => t.symbol).join(', ')}`);
     res.json(topAlerts);
   } catch (err) {
     logger.error(`Error in /pre-explosion-signals: ${err.message}`);
@@ -398,8 +419,8 @@ app.get('/api/analysis/:symbol', async (req, res) => {
     ]);
 
     const explosionScore = Math.round(
-      (parseFloat(change5m) / 25 * 100 * 0.35) +
-      (parseFloat(change1h) / 35 * 100 * 0.15) +
+      (Math.min(parseFloat(change5m), 25) / 25 * 100 * 0.35) +
+      (Math.min(parseFloat(change1h), 35) / 35 * 100 * 0.15) +
       (Math.min(parseFloat(volumeRatio), 10) / 10 * 100 * 0.3) +
       ((rsi >= CONFIG.RSI_MIN && rsi <= CONFIG.RSI_MAX ? 100 : 50) * 0.1) +
       (compression ? 10 : 0)
@@ -431,5 +452,5 @@ app.get('/api/analysis/:symbol', async (req, res) => {
 
 // Servidor activo
 app.listen(PORT, () => {
-  logger.info(`🚀 BoostIQ API running on port ${PORT}`);
+  logger.info(`🚀 BoostIQ API running on port ${PORT} at ${new Date().toLocaleString('es-ES', { timeZone: 'CET' })}`);
 });
