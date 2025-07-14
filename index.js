@@ -1,3 +1,4 @@
+// 📦 BoostIQ API - Versión completa fusionada
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -41,7 +42,6 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// TOKENS POPULARES QUE SE EXCLUYEN
 const POPULAR_TOKENS = new Set([
   'BTCUSDT','ETHUSDT','BNBUSDT','XRPUSDT','ADAUSDT','SOLUSDT','DOGEUSDT',
   'MATICUSDT','DOTUSDT','TRXUSDT','LTCUSDT','LINKUSDT','SHIBUSDT','AVAXUSDT',
@@ -66,7 +66,7 @@ app.get('/api/top-gainers', async (req, res) => {
       .map(t => ({
         symbol: t.symbol,
         price: parseFloat(t.lastPrice),
-        priceChangePercent: parseFloat(t.priceChangePercent),
+        priceChangePercent: parseFloat(t.priceChangePercent)
       }));
     res.json(filtered);
   } catch (err) {
@@ -145,7 +145,7 @@ app.get('/api/explosion-candidates', async (req, res) => {
   }
 });
 
-// 🧠 Señales tempranas de posibles explosiones
+// 🧠 Señales tempranas
 app.get('/api/pre-explosion-signals', async (req, res) => {
   try {
     const cacheKey = 'preExplosionSignals';
@@ -212,7 +212,7 @@ app.get('/api/new-listings', async (req, res) => {
   }
 });
 
-// 📊 Análisis por Token
+// 📊 Análisis individual
 app.get('/api/analysis/:symbol', async (req, res) => {
   try {
     const symbol = req.params.symbol.toUpperCase();
