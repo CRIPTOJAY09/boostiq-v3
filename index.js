@@ -27,20 +27,19 @@ const logger = winston.createLogger({
 const CONFIG = {
   BINANCE_API_KEY: process.env.BINANCE_API_KEY,
   BINANCE_BASE_URL: 'https://api.binance.com/api/v3',
-  CACHE_SHORT_TTL: 120, // 2 minutos
-  CACHE_LONG_TTL: 1800, // 30 minutos
+  CACHE_SHORT_TTL: 120,
+  CACHE_LONG_TTL: 1800,
   REQUEST_TIMEOUT: 8000,
-  MIN_VOLUME_EXPLOSION: 30000, // Reducido para más resultados
-  MIN_VOLUME_REGULAR: 20000, // Reducido para más resultados
-  MIN_GAIN_5M: 3, // Relajado de 4 a 3
-  MIN_GAIN_1H: 4, // Relajado de 6 a 4
-  MIN_VOLUME_RATIO: 1.5, // Relajado de 2.0 a 1.5
+  MIN_VOLUME_EXPLOSION: 30000,
+  MIN_VOLUME_REGULAR: 20000,
+  MIN_GAIN_5M: 3,
+  MIN_GAIN_1H: 4,
+  MIN_VOLUME_RATIO: 1.5,
   RSI_MIN: 40,
   RSI_MAX: 70,
-  MIN_EXPLOSION_SCORE: 50, // Relajado de 60 a 50
-  MIN_ALERT_SCORE: 50, // Relajado de 60 a 50
+  MIN_EXPLOSION_SCORE: 40,
   MAX_CANDIDATES: 50,
-  TOP_RESULTS: 10, // Fijo a 10
+  TOP_RESULTS: 10,
   RSI_PERIOD: 14,
   VOLUME_LOOKBACK_DAYS: 7,
   COMPRESSION_THRESHOLD: 0.5
@@ -109,14 +108,11 @@ async function calculateRSI(symbol) {
       logger.warn(`Insufficient data for RSI ${symbol}`);
       return 50;
     }
-
     const changes = closes.slice(1).map((close, i) => close - closes[i]);
     const gains = changes.map(c => c > 0 ? c : 0);
     const losses = changes.map(c => c < 0 ? -c : 0);
-
     const avgGain = gains.slice(-CONFIG.RSI_PERIOD).reduce((sum, g) => sum + g, 0) / CONFIG.RSI_PERIOD;
     const avgLoss = losses.slice(-CONFIG.RSI_PERIOD).reduce((sum, l) => sum + l, 0) / CONFIG.RSI_PERIOD;
-
     if (avgLoss === 0) return avgGain > 0 ? 100 : 50;
     const rs = avgGain / avgLoss;
     return Math.round(100 - (100 / (1 + rs)));
@@ -203,10 +199,10 @@ app.get('/api/top-gainers', async (req, res) => {
   }
 });
 
-// Candidatos a Explosión
-app.get('/api/explosion-candidates', async (req, res) => {
+// Top Explosion Tokens
+app.get('/api/top-explosion-tokens', async (req, res) => {
   try {
-    const cacheKey = 'explosionCandidates';
+    const cacheKey = 'topExplosionTokens';
     const cached = shortCache.get(cacheKey);
     if (cached) return res.json(cached);
 
@@ -216,7 +212,7 @@ app.get('/api/explosion-candidates', async (req, res) => {
     ]);
 
     const candidates = [];
-    for (const t of tickerData.slice(0, CONFIG.MAX_CANDIDATES)) { // Limitar candidatos iniciales
+    for (const t of tickerData.slice(0, CONFIG.MAX_CANDIDATES)) {
       if (!t.symbol.endsWith('USDT') || POPULAR_TOKENS.has(t.symbol)) continue;
       
       const price = parseFloat(t.lastPrice);
@@ -226,23 +222,23 @@ app.get('/api/explosion-candidates', async (req, res) => {
         continue;
       }
 
-      const [change5m, change1h, rsi, volumeRatio, compression, volatility] = await Promise.all([
+      const [change5m, change1h, rsi, volumeRatio, compression] = await Promise.all([
         calculateChange(t.symbol, '5m'),
         calculateChange(t.symbol, '1h'),
         calculateRSI(t.symbol),
         calculateVolumeRatio(t.symbol, volume),
-        calculateCompression(t.symbol),
-        calculateVolatility(t.symbol)
+        calculateCompression(t.symbol)
       ]);
 
       const isNew = newListings.includes(t.symbol);
       const explosionScore = Math.round(
-        (Math.min(parseFloat(change5m), 25) / 25 * 100 * 0.35) +
-        (Math.min(parseFloat(change1h), 35) / 35 * 100 * 0.15) +
-        (Math.min(parseFloat(volumeRatio), 10) / 10 * 100 * 0.3) +
+        (parseFloat(change5m) / 25 * 100 * 0.4) +
+        (parseFloat(change1h) / 35 * 100 * 0.2) +
+        (parseFloat(volumeRatio) / 10 * 100 * 0.3) +
         ((rsi >= CONFIG.RSI_MIN && rsi <= CONFIG.RSI_MAX ? 100 : 50) * 0.1) +
         (isNew ? 20 : 0) +
-        (compression ? 10 : 0)
+        (compression ? 10 : 0) +
+        20 // Bonus temporal
       );
 
       if (
@@ -262,13 +258,10 @@ app.get('/api/explosion-candidates', async (req, res) => {
           volume,
           volumeRatio: parseFloat(volumeRatio),
           rsi,
-          volatility,
           explosionScore,
           isNew,
           technicals: {
             rsi,
-            volatility,
-            volumeSpike: parseFloat(volumeRatio) >= CONFIG.MIN_VOLUME_RATIO ? parseFloat(volumeRatio).toFixed(2) : '0',
             trend: 'BULLISH',
             support,
             resistance
@@ -284,20 +277,20 @@ app.get('/api/explosion-candidates', async (req, res) => {
       }
     }
 
-    const topCandidates = candidates
+    const topTokens = candidates
       .sort((a, b) => b.explosionScore - a.explosionScore)
       .slice(0, CONFIG.TOP_RESULTS);
 
-    if (topCandidates.length > CONFIG.TOP_RESULTS) {
-      logger.warn(`Truncated ${topCandidates.length} to ${CONFIG.TOP_RESULTS} tokens`);
-      topCandidates.length = CONFIG.TOP_RESULTS;
+    if (topTokens.length > CONFIG.TOP_RESULTS) {
+      logger.warn(`Truncated ${topTokens.length} to ${CONFIG.TOP_RESULTS} tokens`);
+      topTokens.length = CONFIG.TOP_RESULTS;
     }
 
-    shortCache.set(cacheKey, topCandidates);
-    logger.info(`Found ${topCandidates.length} explosion candidates: ${topCandidates.map(t => t.symbol).join(', ')}`);
-    res.json(topCandidates);
+    shortCache.set(cacheKey, topTokens);
+    logger.info(`Found ${topTokens.length} top explosion tokens: ${topTokens.map(t => t.symbol).join(', ')} with scores: ${topTokens.map(t => t.explosionScore).join(', ')}`);
+    res.json(topTokens);
   } catch (err) {
-    logger.error(`Error in /explosion-candidates: ${err.message}`);
+    logger.error(`Error in /top-explosion-tokens: ${err.message}`);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -315,7 +308,7 @@ app.get('/api/pre-explosion-signals', async (req, res) => {
     ]);
 
     const alerts = [];
-    for (const t of tickerData.slice(0, CONFIG.MAX_CANDIDATES)) { // Limitar candidatos iniciales
+    for (const t of tickerData.slice(0, CONFIG.MAX_CANDIDATES)) {
       if (!t.symbol.endsWith('USDT') || POPULAR_TOKENS.has(t.symbol)) continue;
       
       const price = parseFloat(t.lastPrice);
@@ -325,23 +318,23 @@ app.get('/api/pre-explosion-signals', async (req, res) => {
         continue;
       }
 
-      const [change5m, change1h, rsi, volumeRatio, compression, volatility] = await Promise.all([
+      const [change5m, change1h, rsi, volumeRatio, compression] = await Promise.all([
         calculateChange(t.symbol, '5m'),
         calculateChange(t.symbol, '1h'),
         calculateRSI(t.symbol),
         calculateVolumeRatio(t.symbol, volume),
-        calculateCompression(t.symbol),
-        calculateVolatility(t.symbol)
+        calculateCompression(t.symbol)
       ]);
 
       const isNew = newListings.includes(t.symbol);
       const alertScore = Math.round(
-        (Math.min(parseFloat(change5m), 25) / 25 * 100 * 0.35) +
-        (Math.min(parseFloat(change1h), 35) / 35 * 100 * 0.15) +
-        (Math.min(parseFloat(volumeRatio), 10) / 10 * 100 * 0.3) +
+        (parseFloat(change5m) / 25 * 100 * 0.4) +
+        (parseFloat(change1h) / 35 * 100 * 0.2) +
+        (parseFloat(volumeRatio) / 10 * 100 * 0.3) +
         ((rsi >= CONFIG.RSI_MIN && rsi <= CONFIG.RSI_MAX ? 100 : 50) * 0.1) +
         (isNew ? 20 : 0) +
-        (compression ? 25 : 0)
+        (compression ? 25 : 0) +
+        20 // Bonus temporal
       );
 
       if (
@@ -382,7 +375,7 @@ app.get('/api/pre-explosion-signals', async (req, res) => {
     }
 
     shortCache.set(cacheKey, topAlerts);
-    logger.info(`Found ${topAlerts.length} pre-explosion signals: ${topAlerts.map(t => t.symbol).join(', ')}`);
+    logger.info(`Found ${topAlerts.length} pre-explosion signals: ${topAlerts.map(t => t.symbol).join(', ')} with scores: ${topAlerts.map(t => t.alertScore).join(', ')}`);
     res.json(topAlerts);
   } catch (err) {
     logger.error(`Error in /pre-explosion-signals: ${err.message}`);
@@ -409,19 +402,18 @@ app.get('/api/analysis/:symbol', async (req, res) => {
     const price = parseFloat(data.lastPrice);
     const volume = parseFloat(data.baseVolume);
 
-    const [change5m, change1h, rsi, volumeRatio, compression, volatility] = await Promise.all([
+    const [change5m, change1h, rsi, volumeRatio, compression] = await Promise.all([
       calculateChange(symbol, '5m'),
       calculateChange(symbol, '1h'),
       calculateRSI(symbol),
       calculateVolumeRatio(symbol, volume),
-      calculateCompression(symbol),
-      calculateVolatility(symbol)
+      calculateCompression(symbol)
     ]);
 
     const explosionScore = Math.round(
-      (Math.min(parseFloat(change5m), 25) / 25 * 100 * 0.35) +
-      (Math.min(parseFloat(change1h), 35) / 35 * 100 * 0.15) +
-      (Math.min(parseFloat(volumeRatio), 10) / 10 * 100 * 0.3) +
+      (parseFloat(change5m) / 25 * 100 * 0.4) +
+      (parseFloat(change1h) / 35 * 100 * 0.2) +
+      (parseFloat(volumeRatio) / 10 * 100 * 0.3) +
       ((rsi >= CONFIG.RSI_MIN && rsi <= CONFIG.RSI_MAX ? 100 : 50) * 0.1) +
       (compression ? 10 : 0)
     );
@@ -434,7 +426,6 @@ app.get('/api/analysis/:symbol', async (req, res) => {
       volume,
       volumeRatio: parseFloat(volumeRatio),
       rsi,
-      volatility,
       explosionScore,
       recommendation: {
         action: explosionScore >= 80 ? '🔥 COMPRA FUERTE' : '👀 MONITOREAR',
